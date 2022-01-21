@@ -87,6 +87,9 @@ LOGGER = singer.get_logger()
 
 CONFIG = {}
 
+_CONSUMED_LIMIT = 0
+_WAIT_COUNT = 0
+
 class TapFacebookException(Exception):
     pass
 
@@ -246,6 +249,28 @@ def batch_record_failure(response):
     so it fails the sync process.'''
     raise response.error()
 
+
+# From https://github.com/wheelhousedev/tap-facebook/commit/72ec1616e78a49ce3e992201f72fb10adce2b7e6
+def rest(account):
+    response = account.get_insights(fields = ['ad_id'], params = {'limit': 1})
+    wait_if_close_to_rate_limit(response.headers())
+
+
+def wait_if_close_to_rate_limit(headers):
+    global _CONSUMED_LIMIT
+    global _WAIT_COUNT
+
+    rate_limit = json.loads(headers['x-fb-ads-insights-throttle'])
+    _CONSUMED_LIMIT = max(rate_limit['acc_id_util_pct'], rate_limit['app_id_util_pct'])
+    if _CONSUMED_LIMIT > 60:
+        _WAIT_COUNT += 1
+        time_to_sleep = 2 ** _WAIT_COUNT
+        LOGGER.info(f"Waiting {time_to_sleep} seconds until rate limit goes down: {_CONSUMED_LIMIT}%")
+        time.sleep(time_to_sleep)
+    else:
+        _WAIT_COUNT = 0
+
+
 # AdCreative is not an iterable stream as it uses the batch endpoint
 class AdCreative(Stream):
     '''
@@ -269,6 +294,8 @@ class AdCreative(Stream):
             if batch_count % 50 == 0:
                 api_batch.execute()
                 api_batch = API.new_batch()
+
+            rest(self.account)
 
             # Add a call to the batch with the full object
             obj.api_get(fields=self.fields(),
@@ -315,7 +342,9 @@ class Ads(IncrementalStream):
             params = {'limit': RESULT_RETURN_LIMIT}
             if self.current_bookmark:
                 params.update({'filtering': [{'field': 'ad.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
-            yield self._call_get_ads(params)
+            result = self._call_get_ads(params)
+            wait_if_close_to_rate_limit(result.headers())
+            yield result
 
         def do_request_multiple():
             params = {'limit': RESULT_RETURN_LIMIT}
@@ -324,14 +353,16 @@ class Ads(IncrementalStream):
                 bookmark_params.append({'field': 'ad.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp})
             for del_info_filt in iter_delivery_info_filter('ad'):
                 params.update({'filtering': [del_info_filt] + bookmark_params})
-                filt_ads = self._call_get_ads(params)
-                yield filt_ads
+                result = self._call_get_ads(params)
+                wait_if_close_to_rate_limit(result.headers())
+                yield result
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
         # Added retry_pattern to handle AttributeError raised from ad.api_get() below
         @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
         def prepare_record(ad):
-            return ad.api_get(fields=self.fields()).export_all_data()
+            result = ad.api_get(fields=self.fields())
+            return result.export_all_data()
 
         if CONFIG.get('include_deleted', 'false').lower() == 'true':
             ads = do_request_multiple()
@@ -363,7 +394,9 @@ class AdSets(IncrementalStream):
             params = {'limit': RESULT_RETURN_LIMIT}
             if self.current_bookmark:
                 params.update({'filtering': [{'field': 'adset.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
-            yield self._call_get_ad_sets(params)
+            result = self._call_get_ad_sets(params)
+            wait_if_close_to_rate_limit(result.headers())
+            return result
 
         def do_request_multiple():
             params = {'limit': RESULT_RETURN_LIMIT}
@@ -372,14 +405,16 @@ class AdSets(IncrementalStream):
                 bookmark_params.append({'field': 'adset.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp})
             for del_info_filt in iter_delivery_info_filter('adset'):
                 params.update({'filtering': [del_info_filt] + bookmark_params})
-                filt_adsets = self._call_get_ad_sets(params)
-                yield filt_adsets
+                result = self._call_get_ad_sets(params)
+                wait_if_close_to_rate_limit(result.headers())
+                yield result
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
         # Added retry_pattern to handle AttributeError raised from ad_set.api_get() below
         @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
         def prepare_record(ad_set):
-            return ad_set.api_get(fields=self.fields()).export_all_data()
+            result = ad_set.api_get(fields=self.fields())
+            return result.export_all_data()
 
         if CONFIG.get('include_deleted', 'false').lower() == 'true':
             ad_sets = do_request_multiple()
@@ -413,7 +448,9 @@ class Campaigns(IncrementalStream):
             params = {'limit': RESULT_RETURN_LIMIT}
             if self.current_bookmark:
                 params.update({'filtering': [{'field': 'campaign.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
-            yield self._call_get_campaigns(params)
+            result = self._call_get_campaigns(params)
+            wait_if_close_to_rate_limit(result.headers())
+            yield result
 
         def do_request_multiple():
             params = {'limit': RESULT_RETURN_LIMIT}
@@ -422,15 +459,17 @@ class Campaigns(IncrementalStream):
                 bookmark_params.append({'field': 'campaign.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp})
             for del_info_filt in iter_delivery_info_filter('campaign'):
                 params.update({'filtering': [del_info_filt] + bookmark_params})
-                filt_campaigns = self._call_get_campaigns(params)
-                yield filt_campaigns
+                result = self._call_get_campaigns(params)
+                wait_if_close_to_rate_limit(result.headers())
+                yield result
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
         # Added retry_pattern to handle AttributeError raised from request call below
         @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
         def prepare_record(campaign):
             """If campaign.ads is selected, make the request and insert the data here"""
-            campaign_out = campaign.api_get(fields=fields).export_all_data()
+            result = campaign.api_get(fields=self.fields())
+            campaign_out = result.export_all_data()
             if pull_ads:
                 campaign_out['ads'] = {'data': []}
                 ids = [ad['id'] for ad in campaign.get_ads()]
