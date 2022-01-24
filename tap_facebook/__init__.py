@@ -225,7 +225,10 @@ class IncrementalStream(Stream):
     def _iterate(self, generator, record_preparation):
         max_bookmark = None
         for recordset in generator:
+            # This iteration will hit limits
             for record in recordset:
+                if hasattr(record, "headers"):
+                    LOGGER.info(f"record has headers!: {record.headers()}")
                 updated_at = pendulum.parse(record[UPDATED_TIME_KEY])
 
                 if self.current_bookmark and self.current_bookmark >= updated_at:
@@ -267,16 +270,19 @@ def wait_if_close_to_rate_limit(account, headers):
 
     if 'x-fb-ads-insights-throttle' in headers:
         rate_limit = json.loads(headers['x-fb-ads-insights-throttle'])
+        LOGGER.info(f"x-fb-ads-insights-throttle: {headers['x-fb-ads-insights-throttle']}")
         _CONSUMED_LIMIT = max(rate_limit['acc_id_util_pct'], rate_limit['app_id_util_pct'])
     elif 'x-ad-account-usage' in headers:
+        LOGGER.info(f"x-ad-account-usage: {headers['x-ad-account-usage']}")
         rate_limit = json.loads(headers['x-ad-account-usage'])
         _CONSUMED_LIMIT = rate_limit['acc_id_util_pct']
     elif 'x-app-usage' in headers:
+        LOGGER.info(f"x-app-usage: {headers['x-app-usage']}")
         rate_limit = json.loads(headers['x-app-usage'])
         _CONSUMED_LIMIT = max(rate_limit['call_count'], rate_limit['total_time'], rate_limit['total_cputime'])
     else:
         if 'x-business-use-case-usage' in headers:
-            LOGGER.info("''x-business-use-case-usage' in headers but not parsing that. You should implement it!")
+            LOGGER.info(f"''x-business-use-case-usage' in headers but not parsing that. You should implement it! {headers['x-business-use-case-usage']}")
         else:
             LOGGER.info("no headers to parse. Falling back to global checks")
 
@@ -285,6 +291,7 @@ def wait_if_close_to_rate_limit(account, headers):
             response = account.get_insights(fields = ['ad_id'], params = {'limit': 1})
             if not hasattr(response, "headers"):
                 raise ValueError(f"No headers in response! {response}")
+            LOGGER.info(f"x-fb-ads-insights-throttle: {headers['x-fb-ads-insights-throttle']}")
             rate_limit = json.loads(response.headers()['x-fb-ads-insights-throttle'])
             _CONSUMED_LIMIT = max(rate_limit['acc_id_util_pct'], rate_limit['app_id_util_pct'])
         
