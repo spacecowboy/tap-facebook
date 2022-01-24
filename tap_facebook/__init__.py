@@ -10,6 +10,7 @@ from datetime import timezone
 import dateutil
 
 import attr
+from git import head
 import pendulum
 import requests
 import backoff
@@ -89,6 +90,7 @@ CONFIG = {}
 
 _CONSUMED_LIMIT = 0
 _WAIT_COUNT = 0
+_REQUEST_COUNT = 0
 
 class TapFacebookException(Exception):
     pass
@@ -253,22 +255,57 @@ def batch_record_failure(response):
 # From https://github.com/wheelhousedev/tap-facebook/commit/72ec1616e78a49ce3e992201f72fb10adce2b7e6
 def rest(account):
     response = account.get_insights(fields = ['ad_id'], params = {'limit': 1})
-    wait_if_close_to_rate_limit(response.headers())
+    wait_if_close_to_rate_limit(account, response.headers())
 
 
-def wait_if_close_to_rate_limit(headers):
+def wait_if_close_to_rate_limit(account, headers):
     global _CONSUMED_LIMIT
     global _WAIT_COUNT
+    global _REQUEST_COUNT
 
-    rate_limit = json.loads(headers['x-fb-ads-insights-throttle'])
-    _CONSUMED_LIMIT = max(rate_limit['acc_id_util_pct'], rate_limit['app_id_util_pct'])
+    if 'x-fb-ads-insights-throttle' in headers:
+        rate_limit = json.loads(headers['x-fb-ads-insights-throttle'])
+        _CONSUMED_LIMIT = max(rate_limit['acc_id_util_pct'], rate_limit['app_id_util_pct'])
+    elif 'x-ad-account-usage' in headers:
+        rate_limit = json.loads(headers['x-ad-account-usage'])
+        _CONSUMED_LIMIT = rate_limit['acc_id_util_pct']
+    elif 'x-app-usage' in headers:
+        rate_limit = json.loads(headers['x-app-usage'])
+        _CONSUMED_LIMIT = max(rate_limit['call_count'], rate_limit['total_time'], rate_limit['total_cputime'])
+    else:
+        if 'x-business-use-case-usage' in headers:
+            LOGGER.info("''x-business-use-case-usage' in headers but not parsing that. You should implement it!")
+        else:
+            LOGGER.info("no headers to parse. Falling back to global checks")
+
+        if _REQUEST_COUNT % 10 == 0:
+            LOGGER.info("Fetching insights to get throttling info...")
+            response = account.get_insights(fields = ['ad_id'], params = {'limit': 1})
+            if not hasattr(response, "headers"):
+                raise ValueError(f"No headers in response! {response}")
+            rate_limit = json.loads(response.headers()['x-fb-ads-insights-throttle'])
+            _CONSUMED_LIMIT = max(rate_limit['acc_id_util_pct'], rate_limit['app_id_util_pct'])
+        
+        _REQUEST_COUNT += 1
+
     if _CONSUMED_LIMIT > 60:
         _WAIT_COUNT += 1
-        time_to_sleep = 2 ** _WAIT_COUNT
+        _REQUEST_COUNT = 0
+        time_to_sleep = 2 ** (4 + _WAIT_COUNT)
         LOGGER.info(f"Waiting {time_to_sleep} seconds until rate limit goes down: {_CONSUMED_LIMIT}%")
         time.sleep(time_to_sleep)
     else:
         _WAIT_COUNT = 0
+
+
+def wait_if_close_to_rate_limit_safe(account, thing):
+    '''
+    Not all responses have headers?
+    '''
+    if hasattr(thing, "headers"):
+        wait_if_close_to_rate_limit(account, thing.headers())
+    else:
+        wait_if_close_to_rate_limit(account, {})
 
 
 # AdCreative is not an iterable stream as it uses the batch endpoint
@@ -335,7 +372,9 @@ class Ads(IncrementalStream):
         This is necessary because the functions that call this endpoint return
         a generator, whose calls need decorated with a backoff.
         """
-        return self.account.get_ads(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
+        result = self.account.get_ads(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
+        wait_if_close_to_rate_limit_safe(self.account, result)
+        return result
 
     def __iter__(self):
         def do_request():
@@ -343,7 +382,6 @@ class Ads(IncrementalStream):
             if self.current_bookmark:
                 params.update({'filtering': [{'field': 'ad.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
             result = self._call_get_ads(params)
-            wait_if_close_to_rate_limit(result.headers())
             yield result
 
         def do_request_multiple():
@@ -354,7 +392,6 @@ class Ads(IncrementalStream):
             for del_info_filt in iter_delivery_info_filter('ad'):
                 params.update({'filtering': [del_info_filt] + bookmark_params})
                 result = self._call_get_ads(params)
-                wait_if_close_to_rate_limit(result.headers())
                 yield result
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
@@ -387,7 +424,9 @@ class AdSets(IncrementalStream):
         This is necessary because the functions that call this endpoint return
         a generator, whose calls need decorated with a backoff.
         """
-        return self.account.get_ad_sets(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
+        result = self.account.get_ad_sets(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
+        wait_if_close_to_rate_limit_safe(self.account, result.headers())
+        return result
 
     def __iter__(self):
         def do_request():
@@ -395,7 +434,6 @@ class AdSets(IncrementalStream):
             if self.current_bookmark:
                 params.update({'filtering': [{'field': 'adset.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
             result = self._call_get_ad_sets(params)
-            wait_if_close_to_rate_limit(result.headers())
             return result
 
         def do_request_multiple():
@@ -406,7 +444,6 @@ class AdSets(IncrementalStream):
             for del_info_filt in iter_delivery_info_filter('adset'):
                 params.update({'filtering': [del_info_filt] + bookmark_params})
                 result = self._call_get_ad_sets(params)
-                wait_if_close_to_rate_limit(result.headers())
                 yield result
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
@@ -436,7 +473,9 @@ class Campaigns(IncrementalStream):
         This is necessary because the functions that call this endpoint return
         a generator, whose calls need decorated with a backoff.
         """
-        return self.account.get_campaigns(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
+        result = self.account.get_campaigns(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
+        wait_if_close_to_rate_limit_safe(self.account,result.headers())
+        return result
 
     def __iter__(self):
         # ads is not a field under campaigns in the SDK. To add ads to this stream, we have to make a separate request
@@ -449,7 +488,6 @@ class Campaigns(IncrementalStream):
             if self.current_bookmark:
                 params.update({'filtering': [{'field': 'campaign.' + UPDATED_TIME_KEY, 'operator': 'GREATER_THAN', 'value': self.current_bookmark.int_timestamp}]})
             result = self._call_get_campaigns(params)
-            wait_if_close_to_rate_limit(result.headers())
             yield result
 
         def do_request_multiple():
@@ -460,7 +498,6 @@ class Campaigns(IncrementalStream):
             for del_info_filt in iter_delivery_info_filter('campaign'):
                 params.update({'filtering': [del_info_filt] + bookmark_params})
                 result = self._call_get_campaigns(params)
-                wait_if_close_to_rate_limit(result.headers())
                 yield result
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
