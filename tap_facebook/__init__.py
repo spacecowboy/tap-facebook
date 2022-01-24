@@ -225,14 +225,11 @@ class IncrementalStream(Stream):
     def _iterate(self, generator, record_preparation):
         max_bookmark = None
         for recordset in generator:
-            if hasattr(recordset, "headers"):
-                LOGGER.info(f"recordset has headers!: {recordset.headers()}")
             # This iteration will hit limits
             for record in recordset:
-                if hasattr(record, "headers"):
-                    LOGGER.info(f"record has headers!: {record.headers()}")
                 if hasattr(recordset, "headers"):
                     LOGGER.info(f"recordset has headers!: {recordset.headers()}")
+                wait_if_close_to_rate_limit_safe(self.account, recordset)
                 updated_at = pendulum.parse(record[UPDATED_TIME_KEY])
 
                 if self.current_bookmark and self.current_bookmark >= updated_at:
