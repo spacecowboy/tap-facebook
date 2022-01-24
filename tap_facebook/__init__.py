@@ -154,7 +154,7 @@ def retry_pattern(backoff_type, exception, **wait_gen_kwargs):
         if isinstance(exception, TypeError) and str(exception) == "string indices must be integers":
             LOGGER.info('TypeError due to bad JSON response')
     def should_retry_api_error(exception):
-        if isinstance(exception, FacebookBadObjectError) or isinstance(exception, Timeout) or isinstance(exception, ConnectionError) or isinstance(exception, AttributeError):
+        if isinstance(exception, FacebookBadObjectError) or isinstance(exception, Timeout) or isinstance(exception, ConnectionError):
             return True
         elif isinstance(exception, FacebookRequestError):
             return (exception.api_transient_error()
@@ -255,7 +255,7 @@ def batch_record_failure(response):
 # From https://github.com/wheelhousedev/tap-facebook/commit/72ec1616e78a49ce3e992201f72fb10adce2b7e6
 def rest(account):
     response = account.get_insights(fields = ['ad_id'], params = {'limit': 1})
-    wait_if_close_to_rate_limit(account, response.headers())
+    wait_if_close_to_rate_limit(account, response)
 
 
 def wait_if_close_to_rate_limit(account, headers):
@@ -315,7 +315,8 @@ class AdCreative(Stream):
     '''
 
     # Added retry_pattern to handle AttributeError raised from api_batch.execute() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    #JONAS removed attribute error
+    @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
     def sync_batches(self, stream_objects):
         refs = load_shared_schema_refs()
         schema = singer.resolve_schema_references(self.catalog_entry.schema.to_dict(), refs)
@@ -348,7 +349,7 @@ class AdCreative(Stream):
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from account.get_ad_creatives() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, TypeError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError, TypeError), max_tries=5, factor=5)
     def get_adcreatives(self):
         return self.account.get_ad_creatives(params={'limit': RESULT_RETURN_LIMIT})
 
@@ -366,7 +367,7 @@ class Ads(IncrementalStream):
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from account.get_ads() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
     def _call_get_ads(self, params):
         """
         This is necessary because the functions that call this endpoint return
@@ -396,7 +397,7 @@ class Ads(IncrementalStream):
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
         # Added retry_pattern to handle AttributeError raised from ad.api_get() below
-        @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+        @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
         def prepare_record(ad):
             result = ad.api_get(fields=self.fields())
             return result.export_all_data()
@@ -418,14 +419,14 @@ class AdSets(IncrementalStream):
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from account.get_ad_sets() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
     def _call_get_ad_sets(self, params):
         """
         This is necessary because the functions that call this endpoint return
         a generator, whose calls need decorated with a backoff.
         """
         result = self.account.get_ad_sets(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
-        wait_if_close_to_rate_limit_safe(self.account, result.headers())
+        wait_if_close_to_rate_limit_safe(self.account, result)
         return result
 
     def __iter__(self):
@@ -448,7 +449,7 @@ class AdSets(IncrementalStream):
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
         # Added retry_pattern to handle AttributeError raised from ad_set.api_get() below
-        @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+        @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
         def prepare_record(ad_set):
             result = ad_set.api_get(fields=self.fields())
             return result.export_all_data()
@@ -467,14 +468,14 @@ class Campaigns(IncrementalStream):
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from account.get_campaigns() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
     def _call_get_campaigns(self, params):
         """
         This is necessary because the functions that call this endpoint return
         a generator, whose calls need decorated with a backoff.
         """
         result = self.account.get_campaigns(fields=self.automatic_fields(), params=params) # pylint: disable=no-member
-        wait_if_close_to_rate_limit_safe(self.account,result.headers())
+        wait_if_close_to_rate_limit_safe(self.account, result)
         return result
 
     def __iter__(self):
@@ -502,7 +503,7 @@ class Campaigns(IncrementalStream):
 
         @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
         # Added retry_pattern to handle AttributeError raised from request call below
-        @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+        @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
         def prepare_record(campaign):
             """If campaign.ads is selected, make the request and insert the data here"""
             result = campaign.api_get(fields=self.fields())
@@ -541,7 +542,7 @@ class Leads(Stream):
             return leadA
 
     # Added retry_pattern to handle AttributeError raised from api_batch.execute() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
     def sync_batches(self, stream_objects):
         refs = load_shared_schema_refs()
         schema = singer.resolve_schema_references(self.catalog_entry.schema.to_dict(), refs)
@@ -577,14 +578,14 @@ class Leads(Stream):
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from account.get_ads() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
     def get_ads(self):
         params = {'limit': RESULT_RETURN_LIMIT}
         yield from self.account.get_ads(params=params)
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from ad.get_leads() below
-    @retry_pattern(backoff.expo, (FacebookRequestError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError), max_tries=5, factor=5)
     def get_leads(self, ads, start_time, previous_start_time):
         start_time = int(start_time.timestamp()) # Get unix timestamp
         params = {'limit': RESULT_RETURN_LIMIT,
@@ -737,7 +738,7 @@ class AdsInsights(Stream):
 
     @retry_pattern(backoff.expo, (Timeout, ConnectionError), max_tries=5, factor=2)
     # Added retry_pattern to handle AttributeError raised from requests call below
-    @retry_pattern(backoff.expo, (FacebookRequestError, InsightsJobTimeout, FacebookBadObjectError, TypeError, AttributeError), max_tries=5, factor=5)
+    @retry_pattern(backoff.expo, (FacebookRequestError, InsightsJobTimeout, FacebookBadObjectError, TypeError), max_tries=5, factor=5)
     def run_job(self, params):
         LOGGER.info('Starting adsinsights job with params %s', params)
         job = self.account.get_insights( # pylint: disable=no-member
