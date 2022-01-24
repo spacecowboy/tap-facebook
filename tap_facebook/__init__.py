@@ -10,7 +10,6 @@ from datetime import timezone
 import dateutil
 
 import attr
-from git import head
 import pendulum
 import requests
 import backoff
