@@ -87,6 +87,9 @@ LOGGER = singer.get_logger()
 
 CONFIG = {}
 
+global _CONSUMED_LIMIT
+global _WAIT_COUNT
+global _REQUEST_COUNT
 _CONSUMED_LIMIT = 0
 _WAIT_COUNT = 0
 _REQUEST_COUNT = 0
@@ -294,6 +297,7 @@ def wait_if_close_to_rate_limit(account, headers):
         LOGGER.info(f"Waiting {time_to_sleep} seconds until rate limit goes down: {_CONSUMED_LIMIT}%")
         time.sleep(time_to_sleep)
     else:
+        LOGGER.info(f"Not waiting becuase not close to rate limit: {_CONSUMED_LIMIT}%")
         _WAIT_COUNT = 0
 
 
